@@ -34,6 +34,14 @@ func Run(ctx context.Context, cfg Config) error {
 	var conn *sql.DB
 	var err error
 	if !cfg.DryRun {
+		switch strings.ToLower(cfg.PGDriver) {
+		case "", "pgx":
+			cfg.PGDriver = "pgx"
+		case "postgres", "postgresql":
+			cfg.PGDriver = "pgx"
+		default:
+			return fmt.Errorf("unsupported pg_driver=%q (use pgx)", cfg.PGDriver)
+		}
 		conn, err = sql.Open(cfg.PGDriver, cfg.DSN)
 		if err != nil {
 			return fmt.Errorf("open db: %w", err)

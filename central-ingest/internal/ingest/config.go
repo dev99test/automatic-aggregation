@@ -24,7 +24,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		PGDriver:     "postgres",
+		PGDriver:     "pgx",
 		PGSchema:     "underpass",
 		InboxDir:     "/var/lib/central-ingest/inbox",
 		Processing:   "/var/lib/central-ingest/processing",
@@ -52,7 +52,7 @@ func LoadConfig(path string) (Config, error) {
 		cfg.PGSchema = "underpass"
 	}
 	if cfg.PGDriver == "" {
-		cfg.PGDriver = "postgres"
+		cfg.PGDriver = "pgx"
 	}
 	return cfg, nil
 }
