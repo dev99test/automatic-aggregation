@@ -126,47 +126,71 @@ psql "$DSN" -c "SELECT ymd, site_id, device_id FROM underpass.analysis_raw_daily
 - **Tar name mismatch**: Filenames should match `site_device_YYYYMMDD.tar.gz`. If not, the program falls back to `analysis.json` fields.
 - **Missing analysis.json**: The ingest program will move tarballs without `analysis.json` to `failed/`.
 
-## 실행 및 자동화 운영 가이드 (Ubuntu 22.04 + systemd)
+## 자동적재 프로그램 README – 사용 방법(운영 가이드)
 
-아래 내용은 운영자가 그대로 따라 할 수 있도록 구성된 “실행/자동화” 절차입니다.
+아래 내용은 **운영자가 그대로 따라 할 수 있는 실무 중심 안내서**입니다. (Ubuntu 22.04, systemd, PostgreSQL, Grafana OSS 기준)
 
-### 1) 디렉터리 구성 (권장 경로)
+### 1. 디렉터리 구조
+
+권장 경로 예시:
+
+```
+/home/eum/ingest/
+  ├─ inbox/        (SCP로 tar.gz 수신)
+  ├─ processing/   (처리 중)
+  ├─ processed/    (처리 성공)
+  ├─ failed/       (처리 실패)
+```
+
+디렉터리 생성:
 
 ```bash
 mkdir -p /home/eum/ingest/{inbox,processing,processed,failed}
 ```
 
-- **/home/eum/ingest/inbox**: SCP로 tar.gz가 업로드되는 수신함
-- **/home/eum/ingest/processing**: 처리 중인 tar.gz가 이동되는 임시 영역
-- **/home/eum/ingest/processed**: 처리 성공한 tar.gz 보관
-- **/home/eum/ingest/failed**: 처리 실패한 tar.gz 보관(재처리용)
+각 폴더 역할:
 
-### 2) 실행 파일 준비
+- **inbox**: 현장 PC에서 SCP로 전달된 tar.gz 수신
+- **processing**: 처리 중인 파일이 잠시 이동되는 위치
+- **processed**: 정상 처리 완료 파일 보관
+- **failed**: 처리 실패 파일 보관(재처리 대상)
 
-바이너리는 예시로 아래 경로에 둡니다.
+### 2. 실행 파일 준비
+
+실행 파일 위치 예:
 
 ```bash
 sudo install -m 0755 /path/to/central-ingest /usr/local/bin/ingest_tar_to_pg
 ```
 
-실행 권한을 확인합니다.
+권한 확인:
 
 ```bash
 ls -l /usr/local/bin/ingest_tar_to_pg
 ```
 
-### 3) PostgreSQL 준비 (간단 확인)
+실행 파일 역할: `tar.gz`를 읽어 `analysis.json`을 추출하고, PostgreSQL에 **자동 적재(upsert)** 합니다.
 
-DSN 예시(sslmode=disable 포함):
+### 3. PostgreSQL 준비 사항
+
+DB에는 사전에 스키마/테이블이 생성되어 있어야 합니다 (`sql/00_schema.sql` 적용).
+
+DSN 예시:
 
 ```bash
 postgres://ingest_user:password@127.0.0.1:5432/underpass?sslmode=disable
 ```
 
-- **ingest 전용 계정**은 INSERT/UPDATE 권한이 필요합니다.
-- **grafana_ro 계정**은 SELECT 권한만 부여하는 것을 권장합니다.
+권장 계정 분리 이유:
 
-### 4) 수동 실행 (1회 실행)
+- **ingest 전용 계정**: INSERT/UPDATE 권한이 필요 (적재 전용)
+- **grafana 전용 계정**: SELECT만 허용 (시각화 전용)
+
+운영 분리를 통해 **권한 최소화** 및 **보안 사고 영향 범위 축소**가 가능합니다.
+
+### 4. 수동 실행 방법 (1회 실행)
+
+운영자가 직접 1회 실행하는 명령 예시:
 
 ```bash
 /usr/local/bin/ingest_tar_to_pg \
@@ -178,20 +202,21 @@ postgres://ingest_user:password@127.0.0.1:5432/underpass?sslmode=disable
   --failed /home/eum/ingest/failed
 ```
 
-- 성공 시 tar.gz는 **processed** 폴더로 이동합니다.
-- 실패 시 tar.gz는 **failed** 폴더로 이동합니다.
+정상 처리 시:
+- tar.gz는 **processed**로 이동
 
-로그 확인:
+실패 시:
+- tar.gz는 **failed**로 이동
+
+표준 출력 로그 확인:
 
 ```bash
-# 표준 출력(터미널)
 /usr/local/bin/ingest_tar_to_pg --dry-run --inbox /home/eum/ingest/inbox
-
-# systemd 로그(서비스로 실행한 경우)
-journalctl -u ingest-tar-to-pg.service -e
 ```
 
-### 5) 자동 실행 (systemd timer)
+### 5. 자동 실행 설정 (systemd)
+
+#### 5-1. service 파일 설명
 
 `/etc/systemd/system/ingest-tar-to-pg.service` 예시:
 
@@ -219,6 +244,12 @@ WorkingDirectory=/home/eum/ingest
 WantedBy=multi-user.target
 ```
 
+- **Type=oneshot**: 파일 일괄 처리 후 종료하는 방식
+- **User 지정**: 시스템 권한 최소화 (운영 계정으로 실행)
+- **PATH 지정**: 환경 PATH 누락으로 인한 실행 실패 방지
+
+#### 5-2. timer 파일 설명
+
 `/etc/systemd/system/ingest-tar-to-pg.timer` 예시:
 
 ```ini
@@ -234,30 +265,55 @@ Unit=ingest-tar-to-pg.service
 WantedBy=timers.target
 ```
 
-등록 및 실행:
+- **OnCalendar=*:0/5**: 5분마다 실행
+- **Persistent=true**: 서버 재부팅 후 누락된 실행분을 보완
+
+#### 5-3. 등록 및 확인
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now ingest-tar-to-pg.timer
 ```
 
-타이머 등록 확인 및 로그:
+등록 확인:
 
 ```bash
 systemctl list-timers --all | grep ingest-tar-to-pg
+```
+
+로그 확인:
+
+```bash
 journalctl -u ingest-tar-to-pg.service -e
 ```
 
-### 6) 장애/트러블슈팅 체크리스트
+### 6. 운영 중 확인 포인트
 
-- **inbox에 파일이 안 들어옴**: SCP 경로/권한 확인
-- **analysis.json 없음**: tar.gz 내부에 파일이 누락된 경우 → failed로 이동
-- **파일명 패턴 불일치**: `site_device_YYYYMMDD.tar.gz` 형식 확인
+- **inbox에 tar.gz가 들어오는지** 확인
+- **processed/failed 이동 여부** 확인
+- **DB 적재 확인 SQL**:
+
+```bash
+psql "$DSN" -c "SELECT ymd, site_id, device_id FROM underpass.analysis_raw_daily ORDER BY ymd DESC LIMIT 5;"
+```
+
+Grafana는 DB의 View를 읽어 **대시보드로 시각화**합니다.
+
+### 7. 장애 및 트러블슈팅
+
+- **tar.gz가 처리되지 않음**: 파일 권한/디렉터리 경로 확인
+- **analysis.json 없음**: tar.gz 내부에 파일 누락 → failed 이동
+- **파일명 규칙 불일치**: `site_device_YYYYMMDD.tar.gz` 형식 확인
 - **DB 접속 실패**: DSN/계정 권한/방화벽 확인
-- **중복 적재**: 동일 (ymd, site_id, device_id)는 Upsert로 갱신됨
+- **재처리 방법**: failed → inbox로 이동 후 타이머 실행
 
-### 7) 보안/운영 팁 (관공서 환경 고려)
+```bash
+mv /home/eum/ingest/failed/*.tar.gz /home/eum/ingest/inbox/
+```
 
-- 외부 통신 없이 로컬 환경에서 동작합니다.
-- Grafana는 **읽기 전용 계정**으로 접속하도록 구성합니다.
-- failed 폴더 재처리: 파일을 **inbox**로 이동 후 타이머가 처리하도록 대기하거나 수동 실행합니다.
+### 8. 보안/관공서 운영 유의사항
+
+- 외부 통신 없이 로컬 환경에서 동작
+- Grafana는 **읽기 전용 계정**으로 접근
+- tar.gz 및 JSON은 증빙 자료로 보관 가능
+- 자동화 로그는 `journalctl`로 추적 가능
