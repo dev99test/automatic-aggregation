@@ -1,0 +1,10 @@
+[Unit]
+Description=Run central ingest every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+Unit=ingest-tar-to-pg.service
+
+[Install]
+WantedBy=timers.target
