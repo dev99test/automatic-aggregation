@@ -1,0 +1,14 @@
+[Unit]
+Description=Central ingest pipeline for analysis tarballs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=central-ingest
+Group=central-ingest
+ExecStart=/usr/local/bin/central-ingest --config /etc/central-ingest/config.json
+WorkingDirectory=/var/lib/central-ingest
+
+[Install]
+WantedBy=multi-user.target
